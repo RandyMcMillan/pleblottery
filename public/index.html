@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bitnod.es - Node Explorer</title>
+    <style>
+        body {
+            background-color: #0b0c0d;
+            color: #f8f9fa;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            padding: 24px;
+        }
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            background-color: #121315;
+            border-radius: 8px;
+            border: 1px solid #232629;
+            padding: 24px;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #232629;
+            padding-bottom: 20px;
+            margin-bottom: 24px;
+        }
+        .nav-tabs button {
+            background: #232629;
+            color: #a0a5ad;
+            border: none;
+            padding: 8px 16px;
+            margin-right: 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .nav-tabs button.active {
+            background: #f8f9fa;
+            color: #0b0c0d;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+        th {
+            color: #a0a5ad;
+            border-bottom: 1px solid #232629;
+            padding: 12px;
+            font-size: 14px;
+        }
+        td {
+            padding: 16px 12px;
+            border-bottom: 1px solid #1a1c1e;
+            font-size: 14px;
+            vertical-align: top;
+        }
+        .ip-link {
+            color: #d1d4d9;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+        .services-list {
+            line-height: 1.6;
+            color: #b9bcbf;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .ua-text {
+            font-family: monospace;
+            color: #a0a5ad;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h2>Bitnod.es</h2>
+        <div class="nav-tabs">
+            <button>Crawler Data</button>
+            <button>Live Peer Data</button>
+            <button class="active">Node Explorer</button>
+        </div>
+    </div>
+
+    <h3 style="text-align: center; margin-bottom: 24px;">Bitcoin Node Explorer</h3>
+
+    <table>
+        <thead>
+            <tr>
+                <th>IP Address</th>
+                <th>Last Update ▼</th>
+                <th>Country</th>
+                <th>Services</th>
+                <th>Port</th>
+                <th>ISP</th>
+                <th>User Agent</th>
+            </tr>
+        </thead>
+        <tbody id="node-table-body">
+            </tbody>
+    </table>
+</div>
+
+<script>
+    async function fetchNodes() {
+        try {
+            const response = await fetch('/api/nodes');
+            const data = await response.json();
+            const tbody = document.getElementById('node-table-body');
+            tbody.innerHTML = '';
+
+            data.forEach(node => {
+                const servicesHtml = node.services.split(',')
+                    .map(s => `<div>${s}</div>`).join('');
+
+                const row = `
+                    <tr>
+                        <td class="ip-link">${node.ip_address}</td>
+                        <td>${node.last_update}</td>
+                        <td>${node.country}</td>
+                        <td class="services-list">${servicesHtml}</td>
+                        <td>${node.port}</td>
+                        <td>${node.isp}</td>
+                        <td class="ua-text">${node.user_agent}</td>
+                    </tr>
+                `;
+                tbody.insertAdjacentHTML('beforeend', row);
+            });
+        } catch (err) {
+            console.error("Error fetching node explorer entries:", err);
+        }
+    }
+
+    // Polling data every hour as specified in layout context notes
+    fetchNodes();
+    setInterval(fetchNodes, 3600000);
+</script>
+</body>
+</html>
