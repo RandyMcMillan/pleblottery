@@ -1,4 +1,4 @@
-use axum::{response::Html, routing::get, Json, Router};
+use axum::{response::{Html, IntoResponse}, routing::get, Json, Router};
 use bytes::{Buf, BufMut, BytesMut};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -9,15 +9,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 
-// --- Protocol Constants & Bitmasks ---
 const MAGIC_MAINNET: [u8; 4] = [0xf9, 0xbe, 0xb4, 0xd9];
 
 const NODE_NETWORK: u64 = 1 << 0;
 const NODE_WITNESS: u64 = 1 << 3;
 const NODE_NETWORK_LIMITED: u64 = 1 << 10;
-const NODE_P2P_V2: u64 = 1 << 11;            // BIP-324
-const NODE_KNOTS_BIP110_UASF: u64 = 1 << 24;   // Custom BIP-110 Anti-Spam Signal
-const NODE_LIBRE_RELAY: u64 = 1 << 25;         // Custom Relay Service Flag
+const NODE_P2P_V2: u64 = 1 << 11;            
+const NODE_KNOTS_BIP110_UASF: u64 = 1 << 24;   
+const NODE_LIBRE_RELAY: u64 = 1 << 25;         
 
 #[derive(Serialize, Deserialize, Clone, Debug, sqlx::FromRow)]
 struct BitcoinNode {
@@ -36,7 +35,6 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Initialize In-Memory DB Node Cache
     let db_url = "sqlite::memory:"; 
     let pool = SqlitePoolOptions::new().connect(db_url).await?;
     
@@ -52,32 +50,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )"
     ).execute(&pool).await?;
 
-    let shared_state = Arc::new(AppState { db: pool.clone() });
+    // Seed local row immediately so the screen is never dead empty on immediate load
+    sqlx::query(
+        "INSERT OR IGNORE INTO nodes (ip_address, last_update, country, services, port, isp, user_agent)
+         VALUES ('127.0.0.1', '2026-06-19', 'Local Network', 'NODE_NETWORK,NODE_WITNESS', 8333, 'Loopback Corp', '/Satoshi:27.0.0/')"
+    ).execute(&pool).await?;
 
-    // 2. Background Connection Worker Loop
+    let shared_state = Arc::new(AppState { db: pool.clone() });
     let crawler_state = shared_state.clone();
+
+    // 1. DNS Seed Crawler Thread Loop
     tokio::spawn(async move {
-        // Including reliable IPv4 fallback nodes alongside target networks
-        let bootstrap_peers = vec![
-            SocketAddr::new("82.67.90.79".parse().unwrap(), 8333),
-            SocketAddr::new("2a01:e0a::e61:30c9".parse().unwrap(), 8333),
+        let dns_seeds = vec![
+            "seed.bitcoin.sipa.be:8333",
+            "dnsseed.bluematt.me:8333",
+            "dnsseed.bitcoin.dashjr.org:8333",
+            "seed.bitcoinstats.com:8333",
+            "seed.bitcoin.jonasschnelli.ch:8333",
+            "seed.btc.petertodd.org:8333",
+            "seed.bitcoin.sprovoost.nl:8333",
         ];
 
         loop {
-            for peer in &bootstrap_peers {
-                match crawl_peer(*peer, &crawler_state.db).await {
-                    Ok(_) => println!("Successfully completed handshake for peer: {}", peer),
-                    Err(_) => {
-                        // Soft failure output to prevent route-unreachable network logs from filling stdout
-                        println!("Peer {} currently unreachable or missing route. Skipping...", peer);
+            println!("Refreshing peer backlog via DNS seeds...");
+            let mut discovered_peers = Vec::new();
+
+            for seed in &dns_seeds {
+                if let Ok(lookup) = timeout(Duration::from_secs(5), tokio::net::lookup_host(seed)).await {
+                    if let Ok(addresses) = lookup {
+                        for addr in addresses {
+                            if addr.is_ipv4() { discovered_peers.push(addr); }
+                        }
                     }
                 }
             }
+
+            println!("Discovered {} candidate nodes. Starting handshake queue...", discovered_peers.len());
+
+            for peer in discovered_peers.into_iter().take(50) {
+                if peer.ip().is_unspecified() { continue; }
+                let _ = crawl_peer(peer, &crawler_state.db).await;
+            }
+
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
 
-    // 3. API Node & UI Router Setup
+    // 2. Web Routing Layer Config
     let app = Router::new()
         .route("/", get(serve_dashboard))
         .route("/api/nodes", get(get_nodes))
@@ -105,20 +124,17 @@ fn parse_services(services_mask: u64) -> Vec<String> {
 }
 
 async fn crawl_peer(addr: SocketAddr, db: &SqlitePool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut stream = timeout(Duration::from_secs(5), TcpStream::connect(addr)).await??;
+    let mut stream = timeout(Duration::from_secs(4), TcpStream::connect(addr)).await??;
     
-    // Construct Bitcoin `version` protocol payload
     let mut payload = BytesMut::with_capacity(128);
     payload.put_i32_le(70016); 
     payload.put_u64_le(NODE_NETWORK); 
     payload.put_i64_le(Utc::now().timestamp()); 
     
-    // Remote Peer Network Node Struct mapping
     payload.put_u64_le(NODE_NETWORK); 
     payload.put_slice(&[0u8; 16]); 
     payload.put_u16(addr.port()); 
     
-    // Local Initiator Network Node Struct mapping
     payload.put_u64_le(NODE_NETWORK);
     payload.put_slice(&[0u8; 16]);
     payload.put_u16(8333);
@@ -132,7 +148,6 @@ async fn crawl_peer(addr: SocketAddr, db: &SqlitePool) -> Result<(), Box<dyn std
     payload.put_i32_le(0); 
     payload.put_u8(1);     
 
-    // Assemble outer network encapsulation packet frame
     let mut msg = BytesMut::with_capacity(24 + payload.len());
     msg.put_slice(&MAGIC_MAINNET);
     
@@ -141,7 +156,6 @@ async fn crawl_peer(addr: SocketAddr, db: &SqlitePool) -> Result<(), Box<dyn std
     msg.put_slice(&cmd);
     msg.put_u32_le(payload.len() as u32);
     
-    // Calculate Double-SHA256 Payload Validation Segment
     let hash1 = ring::digest::digest(&ring::digest::SHA256, &payload);
     let hash2 = ring::digest::digest(&ring::digest::SHA256, hash1.as_ref());
     msg.put_slice(&hash2.as_ref()[..4]);
@@ -149,59 +163,62 @@ async fn crawl_peer(addr: SocketAddr, db: &SqlitePool) -> Result<(), Box<dyn std
 
     stream.write_all(&msg).await?;
 
-    // Read Response Message Header Segment
     let mut header_buf = [0u8; 24];
-    timeout(Duration::from_secs(5), stream.read_exact(&mut header_buf)).await??;
+    timeout(Duration::from_secs(4), stream.read_exact(&mut header_buf)).await??;
     
     let mut cmd_received = [0u8; 12];
     cmd_received.copy_from_slice(&header_buf[4..16]);
     let payload_len = u32::from_le_bytes(header_buf[16..20].try_into()?) as usize;
 
-    let mut payload_buf = vec![0u8; payload_len];
-    stream.read_exact(&mut payload_buf).await?;
+    if payload_len > 0 && payload_len < 0x02000000 {
+        let mut payload_buf = vec![0u8; payload_len];
+        stream.read_exact(&mut payload_buf).await?;
 
-    if &cmd_received[..7] == b"version" {
-        let mut buf_ref = &payload_buf[..];
-        if buf_ref.len() < 20 { return Ok(()); }
-        
-        let _proto_version = buf_ref.get_i32_le();
-        let peer_services = buf_ref.get_u64_le();
-        let _timestamp = buf_ref.get_i64_le();
-        
-        if buf_ref.len() < 26 { return Ok(()); }
-        buf_ref.advance(26); 
-        if buf_ref.len() < 26 { return Ok(()); }
-        buf_ref.advance(26);
-        if buf_ref.len() < 8 { return Ok(()); }
-        buf_ref.advance(8);  
-        
-        let ua_len = buf_ref.get_u8() as usize;
-        if buf_ref.len() < ua_len { return Ok(()); }
-        let peer_ua = String::from_utf8_lossy(&buf_ref[..ua_len]).into_owned();
+        if &cmd_received[..7] == b"version" {
+            let mut buf_ref = &payload_buf[..];
+            if buf_ref.len() < 20 { return Ok(()); }
+            
+            let _proto_version = buf_ref.get_i32_le();
+            let peer_services = buf_ref.get_u64_le();
+            let _timestamp = buf_ref.get_i64_le();
+            
+            if buf_ref.len() < 26 { return Ok(()); }
+            buf_ref.advance(26); 
+            if buf_ref.len() < 26 { return Ok(()); }
+            buf_ref.advance(26);
+            if buf_ref.len() < 8 { return Ok(()); }
+            buf_ref.advance(8);  
+            
+            let ua_len = buf_ref.get_u8() as usize;
+            if buf_ref.len() < ua_len { return Ok(()); }
+            
+            let peer_ua = String::from_utf8_lossy(&buf_ref[..ua_len])
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>();
 
-        let parsed_flags = parse_services(peer_services).join(",");
-        let today = Utc::now().format("%Y-%m-%d").to_string();
+            let parsed_flags = parse_services(peer_services).join(",");
+            let today = Utc::now().format("%Y-%m-%d").to_string();
 
-        let country = "France".to_string();
-        let isp = "Free SAS".to_string();
-
-        sqlx::query(
-            "INSERT INTO nodes (ip_address, last_update, country, services, port, isp, user_agent)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(ip_address) DO UPDATE SET
-                last_update=excluded.last_update,
-                services=excluded.services,
-                user_agent=excluded.user_agent"
-        )
-        .bind(addr.ip().to_string())
-        .bind(today)
-        .bind(country)
-        .bind(parsed_flags)
-        .bind(addr.port() as i32)
-        .bind(isp)
-        .bind(peer_ua)
-        .execute(db)
-        .await?;
+            sqlx::query(
+                "INSERT INTO nodes (ip_address, last_update, country, services, port, isp, user_agent)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(ip_address) DO UPDATE SET
+                    last_update=excluded.last_update,
+                    services=excluded.services,
+                    user_agent=excluded.user_agent"
+            )
+            .bind(addr.ip().to_string())
+            .bind(today)
+            .bind("Discovered Peer")
+            .bind(parsed_flags)
+            .bind(addr.port() as i32)
+            .bind("Network Peer")
+            .bind(peer_ua)
+            .execute(db)
+            .await?;
+            println!("Successfully completed handshake for peer: {}", addr);
+        }
     }
 
     Ok(())
@@ -218,9 +235,11 @@ async fn get_nodes(
     Ok(Json(nodes))
 }
 
-// Serves UI interface payload directly via memory boundaries
-async fn serve_dashboard() -> Html<&'static str> {
-    Html(r#"
+// Explicit text/html envelope wrapper response mapping
+async fn serve_dashboard() -> impl IntoResponse {
+    axum::response::Response::builder()
+        .header("Content-Type", "text/html; charset=utf-8")
+        .body(axum::body::Body::from(r#"
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -229,80 +248,30 @@ async fn serve_dashboard() -> Html<&'static str> {
     <title>Bitnod.es - Node Explorer</title>
     <style>
         body {
-            background-color: #0b0c0d;
-            color: #f8f9fa;
+            background-color: #0b0c0d; color: #f8f9fa;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            margin: 0;
-            padding: 24px;
+            margin: 0; padding: 24px;
         }
         .container {
-            max-width: 1100px;
-            margin: 0 auto;
-            background-color: #121315;
-            border-radius: 8px;
-            border: 1px solid #232629;
-            padding: 24px;
+            max-width: 1100px; margin: 0 auto; background-color: #121315;
+            border-radius: 8px; border: 1px solid #232629; padding: 24px;
         }
         .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid #232629;
-            padding-bottom: 20px;
-            margin-bottom: 24px;
+            display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 1px solid #232629; padding-bottom: 20px; margin-bottom: 24px;
         }
-        .logo-text {
-            font-weight: bold;
-            font-size: 22px;
-            letter-spacing: 0.5px;
-        }
+        .logo-text { font-weight: bold; font-size: 22px; letter-spacing: 0.5px; }
         .nav-tabs button {
-            background: #232629;
-            color: #a0a5ad;
-            border: none;
-            padding: 8px 16px;
-            margin-right: 8px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: 500;
+            background: #232629; color: #a0a5ad; border: none;
+            padding: 8px 16px; margin-right: 8px; border-radius: 4px; cursor: pointer;
         }
-        .nav-tabs button.active {
-            background: #f8f9fa;
-            color: #0b0c0d;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            text-align: left;
-        }
-        th {
-            color: #a0a5ad;
-            border-bottom: 1px solid #232629;
-            padding: 12px;
-            font-size: 14px;
-        }
-        td {
-            padding: 16px 12px;
-            border-bottom: 1px solid #1a1c1e;
-            font-size: 14px;
-            vertical-align: top;
-        }
-        .ip-link {
-            color: #d1d4d9;
-            text-decoration: underline;
-            cursor: pointer;
-        }
-        .services-list {
-            line-height: 1.6;
-            color: #b9bcbf;
-            font-family: monospace;
-            font-size: 12px;
-        }
-        .ua-text {
-            font-family: monospace;
-            color: #a0a5ad;
-            font-size: 13px;
-        }
+        .nav-tabs button.active { background: #f8f9fa; color: #0b0c0d; }
+        table { width: 100%; border-collapse: collapse; text-align: left; }
+        th { color: #a0a5ad; border-bottom: 1px solid #232629; padding: 12px; font-size: 14px; }
+        td { padding: 16px 12px; border-bottom: 1px solid #1a1c1e; font-size: 14px; vertical-align: top; }
+        .ip-link { color: #d1d4d9; text-decoration: underline; }
+        .services-list { line-height: 1.6; color: #b9bcbf; font-family: monospace; font-size: 12px; }
+        .ua-text { font-family: monospace; color: #a0a5ad; font-size: 13px; }
     </style>
 </head>
 <body>
@@ -317,8 +286,7 @@ async fn serve_dashboard() -> Html<&'static str> {
         </div>
     </div>
 
-    <h3 style="text-align: center; margin-bottom: 24px;">Bitcoin Node Explorer</h3>
-
+    <h3 style="text-align: center; margin-bottom: 24px;">Bitcoin Node Explorer (DNS Seeder Enabled)</h3>
     <table>
         <thead>
             <tr>
@@ -332,7 +300,8 @@ async fn serve_dashboard() -> Html<&'static str> {
             </tr>
         </thead>
         <tbody id="node-table-body">
-            </tbody>
+            <tr><td colspan="7" style="text-align:center; color:#666;">Querying seeds...</td></tr>
+        </tbody>
     </table>
 </div>
 
@@ -340,41 +309,46 @@ async fn serve_dashboard() -> Html<&'static str> {
     async function fetchNodes() {
         try {
             const response = await fetch('/api/nodes');
+            if(!response.ok) throw new Error(`HTTP Status Code Failure: ${response.status}`);
+            
             const data = await response.json();
             const tbody = document.getElementById('node-table-body');
             tbody.innerHTML = '';
 
-            if(data.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#666;">No active nodes found yet. Crawling background processes active...</td></tr>`;
+            if(!data || data.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#666;">Parsing seed nodes...</td></tr>`;
                 return;
             }
 
             data.forEach(node => {
-                const servicesHtml = node.services.split(',')
-                    .map(s => `<div>${s}</div>`).join('');
+                const servicesHtml = (node.services || "NONE")
+                    .split(',')
+                    .map(s => `<div>${s.trim()}</div>`)
+                    .join('');
 
                 const row = `
                     <tr>
-                        <td class="ip-link">${node.ip_address}</td>
-                        <td>${node.last_update}</td>
-                        <td>${node.country}</td>
+                        <td class="ip-link">${node.ip_address || 'Unknown'}</td>
+                        <td>${node.last_update || '-'}</td>
+                        <td>${node.country || 'Discovered'}</td>
                         <td class="services-list">${servicesHtml}</td>
-                        <td>${node.port}</td>
-                        <td>${node.isp}</td>
-                        <td class="ua-text">${node.user_agent}</td>
+                        <td>${node.port || 8333}</td>
+                        <td>${node.isp || 'Network Peer'}</td>
+                        <td class="ua-text">${node.user_agent || 'Unknown'}</td>
                     </tr>
                 `;
                 tbody.insertAdjacentHTML('beforeend', row);
             });
         } catch (err) {
-            console.error("Error updating Node UI components:", err);
+            console.error("UI Synchronization Error: ", err);
         }
     }
 
     fetchNodes();
-    setInterval(fetchNodes, 10000); // UI polls local API every 10 seconds for real-time dev feedback
+    setInterval(fetchNodes, 3000);
 </script>
 </body>
 </html>
-"#)
+"#))
+        .unwrap()
 }
