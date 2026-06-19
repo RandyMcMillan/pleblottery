@@ -1,5 +1,5 @@
 use bitcoin::opcodes::all::{
-    OP_0, OP_2DROP, OP_DROP, OP_FROMALTSTACK, OP_TOALTSTACK,
+    OP_2DROP, OP_DROP, OP_FROMALTSTACK, OP_TOALTSTACK,
 };
 use bitcoin::script;
 
@@ -27,7 +27,7 @@ fn main() {
         .push_opcode(OP_TOALTSTACK)
         .push_slice(content_type)
         .push_opcode(OP_TOALTSTACK)
-        .push_opcode(OP_0) // Serves as the boundary vector (OP_FALSE / 0x00)
+        .push_int(0) // Safe, robust way to push 0x00/OP_FALSE onto the stack cleanly
         .push_opcode(OP_TOALTSTACK)
         .push_slice(payload)
         .push_opcode(OP_TOALTSTACK);
