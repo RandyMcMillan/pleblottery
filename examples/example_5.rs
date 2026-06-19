@@ -36,6 +36,8 @@ fn main() {
     println!("  BIP-110 Compliant : NO (Banned OP_IF [0x63] detected)");
     println!("  Total Byte Size   : {} bytes", cond_script.len());
     println!("  Compiled Hex      : {}", cond_hex);
+    println!("  Detailed Mechanical Breakdown:");
+    print_verbose_instructions(&cond_script);
     assert_eq!(cond_script.len(), 35, "Proof Failed: Conditional script must be exactly 35 bytes.");
     println!("  -> PROOF VERIFIED: Match fee structure layout.");
     println!("-----------------------------------------------------------");
@@ -62,6 +64,8 @@ fn main() {
     println!("  BIP-110 Compliant : YES (Flat execution, pushes <= 256B)");
     println!("  Total Byte Size   : {} bytes", linear_script.len());
     println!("  Compiled Hex      : {}", linear_hex);
+    println!("  Detailed Mechanical Breakdown:");
+    print_verbose_instructions(&linear_script);
     assert_eq!(linear_script.len(), 35, "Proof Failed: Linear script size mismatch.");
     assert_eq!(
         linear_script.len(), 
@@ -105,6 +109,8 @@ fn main() {
     println!("  BIP-110 Compliant : YES (Main stack protected from bloat)");
     println!("  Total Byte Size   : {} bytes", alt_script.len());
     println!("  Compiled Hex      : {}", alt_hex);
+    println!("  Detailed Mechanical Breakdown:");
+    print_verbose_instructions(&alt_script);
     assert_eq!(alt_script.len(), 45, "Proof Failed: Altstack script size mismatch.");
     println!("  -> PROOF VERIFIED: Clean isolation state log verified.");
     println!("===========================================================");
@@ -112,4 +118,27 @@ fn main() {
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Iterates through script tokens and emits an aligned log configuration to stdout
+fn print_verbose_instructions(script: &script::Script) {
+    for instruction in script.instructions() {
+        match instruction {
+            Ok(script::Instruction::Op(op)) => {
+                println!("    [Opcode]     0x{:02x} -> {:?}", op.to_u8(), op);
+            }
+            Ok(script::Instruction::PushBytes(bytes)) => {
+                let len = bytes.len();
+                let hex_data = hex_encode(bytes.as_bytes());
+                let ascii_view = String::from_utf8_lossy(bytes.as_bytes());
+                // Handle non-printable characters cleanly for terminal viewing
+                let clean_ascii = ascii_view.replace(|c: char| c.is_control(), ".");
+                println!(
+                    "    [PushData]   Length: 0x{:02x} ({:2}B) | Hex: [{}] | Raw: \"{}\"",
+                    len, len, hex_data, clean_ascii
+                );
+            }
+            Err(e) => println!("    [DecodeError] Parsing failure: {:?}", e),
+        }
+    }
 }
