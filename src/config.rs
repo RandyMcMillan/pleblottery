@@ -186,8 +186,8 @@ impl From<PlebLotteryTemplateDistributionClientConfig> for Sv2ClientServiceConfi
         Sv2ClientServiceConfig {
             min_supported_version: 2,
             max_supported_version: 2,
-            endpoint_host: None,
-            endpoint_port: None,
+            endpoint_host: Some(config.server_addr.ip().to_string()),
+            endpoint_port: Some(config.server_addr.port()),
             vendor: None,
             hardware_version: None,
             device_id: None,
@@ -195,13 +195,14 @@ impl From<PlebLotteryTemplateDistributionClientConfig> for Sv2ClientServiceConfi
             mining_config: None,
             job_declaration_config: None,
             template_distribution_config: Some(Sv2ClientServiceTemplateDistributionConfig {
+
                 server_addr: config.server_addr,
                 auth_pk: config.auth_pk,
                 coinbase_output_constraints: config
                     .mining_server_config
                     .unwrap()
                     .calculate_coinbase_output_constraints(),
-                setup_connection_flags: 0,
+                setup_connection_flags: 0b0101,
             }),
         }
     }

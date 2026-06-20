@@ -1,0 +1,3 @@
+[submodule "sv2-apps"]
+	path = sv2-apps
+	url = git@github.com:RandyMcMillan/sv2-apps.git
