@@ -1,17 +1,49 @@
+# Pleblottery pool configuration.
+#
+# Used by:
+#   cargo run --example pool_server
+#
+# The example overrides template_distribution_config.server_addr at runtime
+# with the auto-started upstream SV2 template provider.
+
 [mining_server_config]
+# SV2 mining server port that downstream miners connect to.
+# Valid: 0..=65535.
 listening_port = 3333
+
+# SV2 noise protocol public key. Required.
 pub_key = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+
+# SV2 noise protocol private key. Required.
 priv_key = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n"
+
+# Noise certificate validity, in seconds.
 cert_validity = 3600
+
+# Idle connection timeout, in seconds.
 inactivity_limit = 3600
+
+# Bitcoin address that receives the block reward.
+# Example (regtest/testnet): tb1q...
 coinbase_output_address = "tb1qw8rnkgnk7s48h6w5c0mg7we7gvzykeyp2sze82"
+
+# Short tag embedded in the coinbase transaction. Max 8 characters.
 coinbase_tag = "username"
+
+# Number of shares batched together for accounting/reporting.
 share_batch_size = 10
+
+# Expected downstream hashrate, used for vardiff and share accounting.
 expected_shares_per_minute = 1000.0
 
 [template_distribution_config]
+# Upstream SV2 template provider address.
+# The pool example replaces this at runtime.
 server_addr = "127.0.0.1:8442"
+
+# Optional public key used to authenticate to the template provider.
 # auth_pk = "9bwHCYnjhbHm4AS3pWg9MtAH83mzWohoJJJDELYBqZhDNqszDLc"
 
 [web_config]
+# HTTP dashboard port. Valid: 0..=65535.
 listening_port = 1337
