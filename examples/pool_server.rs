@@ -71,7 +71,7 @@ impl RegtestTemplateProvider {
         Ok(template)
     }
 
-    /// Starts the background sync loop that pushes templates to Pleblottery's TDP layer
+    /// Starts the background sync loop that polls bitcoind
     pub async fn start_bridging<F>(&self, mut on_new_template: F)
     where
         F: FnMut(BlockTemplate) + Send + 'static,
@@ -109,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("🚀 Starting Stratum V2 Template Provider server...");
 
-    // 1. Start the upstream SV2 Template Provider server dynamically
+    // 1. Start the upstream SV2 Template Provider server dynamically (None = auto-assign port)
     let (_tp, tp_address) = start_template_provider(None);
     println!("📦 Upstream SV2 Template Provider running at {}", tp_address);
 
