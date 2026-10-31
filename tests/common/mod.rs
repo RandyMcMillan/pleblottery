@@ -56,8 +56,8 @@ pub fn load_config() -> PleblotteryConfig {
             .assume_checked()
             .script_pubkey(),
         coinbase_tag: "pleblottery".to_string(),
-        share_batch_size: 10,
-        expected_shares_per_minute: 1.0,
+        share_batch_size: 1, // Reduce batch size for immediate feedback
+        expected_shares_per_minute: 60.0, // Adjust expected frequency to prevent tight timeouts
     };
 
     let template_distribution_config = PlebLotteryTemplateDistributionClientConfig {
